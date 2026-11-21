@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "fastify": "^5.1.0",
-    "pg": "^8.13.1"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

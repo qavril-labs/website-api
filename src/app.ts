@@ -3,9 +3,13 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { RateLimiter } from "./rate-limit.js";
 import { parseLead, ValidationError } from "./schema.js";
 import type { LeadStore } from "./store.js";
+import { registerCms } from "./cms/routes.js";
+import type { CmsStore } from "./cms/store.js";
 
 export interface AppOptions {
   store: LeadStore;
+  cms?: CmsStore;
+  adminKey?: string;
   /** Browser origins allowed to call the endpoint (the marketing site). */
   corsOrigins: string[];
   /** Called once per stored lead. Failures are logged and never returned to the visitor. */
@@ -44,6 +48,8 @@ export function buildApp(options: AppOptions): FastifyInstance {
   });
 
   app.get("/health", async () => ({ status: "ok", service: "website-api" }));
+
+  if (options.cms) registerCms(app, { cms: options.cms, leads: options.store, adminKey: options.adminKey });
 
   app.options("/v1/public/leads", async (req, reply) => {
     cors(req.headers.origin, reply);

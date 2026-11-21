@@ -19,4 +19,14 @@ export class PgLeadStore implements LeadStore {
     );
     return res.rowCount === 1;
   }
+
+  async recent(limit: number): Promise<Record<string, unknown>[]> {
+    const res = await this.pool.query("SELECT * FROM leads ORDER BY created_at DESC LIMIT $1", [limit]);
+    return res.rows;
+  }
+
+  async total(): Promise<number> {
+    const res = await this.pool.query("SELECT COUNT(*)::int AS n FROM leads");
+    return Number(res.rows[0].n);
+  }
 }

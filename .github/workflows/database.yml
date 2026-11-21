@@ -1,0 +1,66 @@
+name: Database
+# Applies the website migrations and the role script to a Postgres 18 service container, then checks
+# the application role: it can add and read leads and edit content, and it cannot create tables.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  migrate-and-roles:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      OWNER_URL: postgresql://postgres:test@localhost:5432/site
+      APP_PASSWORD: test-only-password-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install PostgreSQL 18 client tools
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - name: Create the database, apply the migrations twice, then the roles
+        run: |
+          psql "postgresql://postgres:test@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE site"
+          npm run migrate
+          npm run migrate
+          psql "$OWNER_URL" -v ON_ERROR_STOP=1 -v website_api_app_password="$APP_PASSWORD" -f db/roles/bootstrap.sql
+      - name: Check the application role
+        run: |
+          APP_URL="postgresql://website_api_app:${APP_PASSWORD}@localhost:5432/site"
+          psql "$APP_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO leads (id, name, email, interest, consent_given, consent_at) VALUES (gen_random_uuid(), 'Test', 'test@example.com', 'trial', true, now())"
+          n=$(psql "$APP_URL" -At -c "SELECT count(*) FROM leads")
+          test "$n" = "1" && echo "app role can add and read leads"
+          psql "$APP_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO cms_faqs (category, question, answer) VALUES ('General', 'Q?', 'A.')"
+          echo "app role can edit content"
+          if psql "$APP_URL" -v ON_ERROR_STOP=1 -c "CREATE TABLE leads_copy (x int)" 2>/dev/null; then
+            echo "app role created a table" && exit 1
+          else
+            echo "app role cannot run DDL"
+          fi
+          if psql "$APP_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE leads" 2>/dev/null; then
+            echo "app role dropped a table" && exit 1
+          else
+            echo "app role cannot drop tables"
+          fi

@@ -35,11 +35,20 @@ jobs:
           export ADMIN_KEY="$(aws secretsmanager get-secret-value --secret-id qavril/prod/website-api/admin-key --query SecretString --output text)"
           export NODE_ENV=production TRUST_PROXY=true CORS_ORIGINS=https://qavrillabs.com,https://staging.qavrillabs.com
           docker rm -f website-api 2>/dev/null || true
-          docker run -d --restart unless-stopped --name website-api -p 80:3000 \
+          docker run -d --restart unless-stopped --name website-api -p 127.0.0.1:3000:3000 \
             -e NODE_ENV -e DATABASE_URL -e ADMIN_KEY -e TRUST_PROXY -e CORS_ORIGINS \
             929219061572.dkr.ecr.ap-south-1.amazonaws.com/website-api:__SHA__
+          mkdir -p /opt/caddy
+          cat > /opt/caddy/Caddyfile <<'CADDY'
+          content-staging.qavrillabs.com {
+            reverse_proxy 127.0.0.1:3000
+          }
+          CADDY
+          docker rm -f caddy 2>/dev/null || true
+          docker run -d --restart unless-stopped --name caddy --network host \
+            -v /opt/caddy/Caddyfile:/etc/caddy/Caddyfile -v caddy_data:/data caddy:2
           sleep 5
-          curl -sf http://localhost/health
+          curl -sf http://127.0.0.1:3000/health
           SCRIPT
           )
           CMD="${CMD//__SHA__/$GITHUB_SHA}"

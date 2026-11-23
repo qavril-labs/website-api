@@ -1,0 +1,37 @@
+name: Backup
+# Nightly logical backup of the website database to S3. Runs from main only, under the
+# qavril-backup-writer OIDC role, which can write only to website-api/ in the backup bucket.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 20 * * *"   # 02:00 IST every day
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL 18 client tools
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::929219061572:role/qavril-backup-writer
+          aws-region: ap-south-1
+      - name: Read the backup URL from Secrets Manager (masked in logs)
+        run: |
+          url="$(aws secretsmanager get-secret-value --secret-id qavril/prod/website-api/backup-url --query SecretString --output text)"
+          echo "::add-mask::$url"
+          echo "BACKUP_URL=$url" >> "$GITHUB_ENV"
+      - name: Dump and upload
+        env:
+          BACKUP_BUCKET: qavril-backups-prod-qv7k2
+          SERVICE: website-api
+        run: bash scripts/backup.sh

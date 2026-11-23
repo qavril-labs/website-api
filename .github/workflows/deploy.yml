@@ -1,0 +1,55 @@
+name: Deploy staging
+# Builds the website-api image, pushes it under the commit id, and runs it on the staging server
+# through AWS Systems Manager. Runs only on main, after the checks have passed.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-24.04
+    env:
+      AWS_REGION: ap-south-1
+      REPO_URI: 929219061572.dkr.ecr.ap-south-1.amazonaws.com/website-api
+      INSTANCE_ID: i-091b6701ee3751624
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::929219061572:role/website-api-deploy
+          aws-region: ap-south-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push the image
+        run: |
+          docker build -t "$REPO_URI:${GITHUB_SHA}" .
+          docker push "$REPO_URI:${GITHUB_SHA}"
+      - name: Run the image on the staging server
+        run: |
+          CMD=$(cat <<'SCRIPT'
+          set -e
+          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 929219061572.dkr.ecr.ap-south-1.amazonaws.com
+          docker pull 929219061572.dkr.ecr.ap-south-1.amazonaws.com/website-api:__SHA__
+          export DATABASE_URL="$(aws secretsmanager get-secret-value --secret-id qavril/prod/website-api/app-url --query SecretString --output text)"
+          export ADMIN_KEY="$(aws secretsmanager get-secret-value --secret-id qavril/prod/website-api/admin-key --query SecretString --output text)"
+          export NODE_ENV=production TRUST_PROXY=true CORS_ORIGINS=https://qavrillabs.com,https://staging.qavrillabs.com
+          docker rm -f website-api 2>/dev/null || true
+          docker run -d --restart unless-stopped --name website-api -p 80:3000 \
+            -e NODE_ENV -e DATABASE_URL -e ADMIN_KEY -e TRUST_PROXY -e CORS_ORIGINS \
+            929219061572.dkr.ecr.ap-south-1.amazonaws.com/website-api:__SHA__
+          sleep 5
+          curl -sf http://localhost/health
+          SCRIPT
+          )
+          CMD="${CMD//__SHA__/$GITHUB_SHA}"
+          CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
+            --parameters "$(python3 -c 'import json,sys; print(json.dumps({"commands": [sys.argv[1]]}))' "$CMD")" \
+            --query Command.CommandId --output text)
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success) break;; Failed|Cancelled|TimedOut) echo "deploy $STATUS"; aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text; exit 1;; esac
+            sleep 10
+          done
+          test "$STATUS" = "Success"
+          echo "deployed $GITHUB_SHA"
